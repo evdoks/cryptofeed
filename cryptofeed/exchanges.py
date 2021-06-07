@@ -39,6 +39,7 @@ from cryptofeed.exchange.okex import OKEx
 from cryptofeed.exchange.poloniex import Poloniex
 from cryptofeed.exchange.probit import Probit
 from cryptofeed.exchange.upbit import Upbit
+from cryptofeed.exchange.bsdex import Bsdex 
 
 # Maps string name to class name for use with config
 EXCHANGE_MAP = {
