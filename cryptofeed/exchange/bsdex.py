@@ -3,9 +3,12 @@ from typing import Tuple, Dict
 from decimal import Decimal
 import json
 import logging
+import time
+
+from sortedcontainers import SortedDict as sd
 
 from cryptofeed.connection import AsyncConnection
-from cryptofeed.defines import BSDEX, TICKER
+from cryptofeed.defines import BSDEX, TICKER, BID, ASK, L2_BOOK
 from cryptofeed.feed import Feed
 
 
@@ -14,16 +17,19 @@ LOG = logging.getLogger('feedhandler')
 
 class Bsdex(Feed):
     id = BSDEX
-    symbol_endpoint = 'https://api-public.bsdex.de/v1/markets'      # non-existing endpoint
+    symbol_endpoint = 'https://api-public.bsdex.de/v1/markets'  # non-existing endpoint
 
     def __init__(self, **kwargs):
-        super().__init__('wss://api.bsdex.de/consumer/ws?access_token=4Mxa789dwcJAw5ONvMzYwnjrIqWlkREC', **kwargs)
+        super().__init__(
+            'wss://api.bsdex.de/consumer/ws?access_token=CYlQFKJgF0D8iPvtHSvnHCUs4nFlDEk7',
+            **kwargs)
         self.__reset()
 
     def __reset(self):
         pass
 
-    def _parse_symbol_data(cls, data: dict, symbol_separator: str) -> Tuple[Dict, Dict]:
+    def _parse_symbol_data(cls, data: dict,
+                           symbol_separator: str) -> Tuple[Dict, Dict]:
         return {'BTC-EUR': 'btc-eur'}, {}
 
     def symbol_mapping(cls, symbol_separator='-', refresh=False) -> Dict:
@@ -46,14 +52,53 @@ class Bsdex(Feed):
             }
         }
         """
-        await self.callback(TICKER,
-                            feed=self.id,
-                            symbol=msg['subchan_name'].upper(),
-                            bid=Decimal(msg['data']['sell_price']),
-                            ask=Decimal(msg['data']['buy_price']),
-                            timestamp=None,
-                            receipt_timestamp=None
-                            )
+        timestamp = time.time()
+        await self.callback(
+            TICKER,
+            feed=self.id,
+            symbol=msg['subchan_name'].upper(),
+            bid=Decimal(msg['data']['sell_price']),
+            ask=Decimal(msg['data']['buy_price']),
+            timestamp=timestamp,
+            receipt_timestamp=timestamp,
+        )
+
+    async def _book(self, msg):
+        """
+        {
+            "chan_name": "orderbook",
+            "subchan_name": "btc-eur",
+            "type": "data",
+            "data": [
+                {
+                "price": "0.2",
+                "side": "buy",
+                "size": "1",
+                "market": "btc-eur"
+                },
+                {
+                "price": "1003512.3",
+                "side": "sell",
+                "size": "0.15",
+                "market": "btc-eur"
+                }
+            ]
+        }
+        """
+        timestamp = time.time()
+        pair = msg['subchan_name'].upper()
+        self.l2_book[pair] = {
+            BID: sd({
+                Decimal(m['price']): Decimal(m['size'])
+                for m in msg['data'] if m['side'] == 'buy'
+            }),
+            ASK: sd({
+                Decimal(m['price']): Decimal(m['size'])
+                for m in msg['data'] if m['side'] == 'sell'
+            })
+        }
+
+        await self.book_callback(self.l2_book[pair], L2_BOOK, pair, False, False, timestamp, timestamp)
 
     async def subscribe(self, conn: AsyncConnection):
         self.__reset()
@@ -61,20 +106,27 @@ class Bsdex(Feed):
         for chan, symbols in self.subscription.items():
             for symbol in symbols:
                 client_id += 1
-                await conn.write(json.dumps(
-                    {
+                await conn.write(
+                    json.dumps({
                         "type": "subscribe",
                         "chan_name": f"{chan}",
                         "subchan_name": f"{symbol}"
-                    }
-                ))
+                    }))
 
     async def message_handler(self, msg, conn, timestamp):
         msg = json.loads(msg, parse_float=Decimal)
-        if 'chan_name' in msg and msg['chan_name'] == 'quote':
-            if 'type' in msg and msg['type'] == 'subscribed':
-                return
-            elif 'type' in msg and msg['type'] == 'data':
-                await self._ticker(msg)
+
+        if 'ping' in msg:
+            await conn.write(json.dumps({'pong': msg['ping']}))
+        elif msg['type'] == 'online':
+            return
+        elif msg['type'] == 'subscribed':
+            return
+        elif 'chan_name' in msg and msg['chan_name'] == 'quote' and msg['type'] == 'data':
+            await self._ticker(msg)
+        elif 'chan_name' in msg and msg['chan_name'] == 'orderbook' and msg['type'] == 'data':
+            await self._book(msg)
+        elif msg['type'] == 'offline':
+            LOG.warning("%s: Channel %s is offline", self.id, msg['chan_name'])
         else:
             LOG.warning("%s: Invalid message type %s", self.id, msg)
