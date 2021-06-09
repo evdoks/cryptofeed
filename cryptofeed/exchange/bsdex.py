@@ -11,8 +11,8 @@ from cryptofeed.connection import AsyncConnection
 from cryptofeed.defines import BSDEX, TICKER, BID, ASK, L2_BOOK
 from cryptofeed.feed import Feed
 
-
 LOG = logging.getLogger('feedhandler')
+BOOK_DELTA_MAX_DEPTH = 100
 
 
 class Bsdex(Feed):
@@ -21,7 +21,7 @@ class Bsdex(Feed):
 
     def __init__(self, **kwargs):
         super().__init__(
-            'wss://api.bsdex.de/consumer/ws?access_token=CYlQFKJgF0D8iPvtHSvnHCUs4nFlDEk7',
+            'wss://api.bsdex.de/consumer/ws?access_token=1nMhJHDcOWVsvG4XUTbNerhwGLXDgEHH',
             **kwargs)
         self.__reset()
 
@@ -86,31 +86,57 @@ class Bsdex(Feed):
         }
         """
         timestamp = time.time()
+        delta = {BID: [], ASK: []}
         pair = msg['subchan_name'].upper()
-        self.l2_book[pair] = {
-            BID: sd({
-                Decimal(m['price']): Decimal(m['size'])
-                for m in msg['data'] if m['side'] == 'buy'
-            }),
-            ASK: sd({
-                Decimal(m['price']): Decimal(m['size'])
-                for m in msg['data'] if m['side'] == 'sell'
-            })
-        }
+        if pair not in self.l2_book:
+            self.l2_book[pair] = {
+                BID:
+                sd({
+                    Decimal(m['price']): Decimal(m['size'])
+                    for m in msg['data'] if m['side'] == 'buy'
+                }),
+                ASK:
+                sd({
+                    Decimal(m['price']): Decimal(m['size'])
+                    for m in msg['data'] if m['side'] == 'sell'
+                })
+            }
+        else:
+            for m in msg['data']:
+                side = False
+                if m['side'] == 'buy':
+                    side = BID
+                elif m['side'] == 'sell':
+                    side = ASK
+                if side:
+                    price = Decimal(m['price'])
+                    size = Decimal(m['size'])
+                    if size == 0:
+                        if price in self.l2_book[pair][side]:
+                            del self.l2_book[pair][side][price]
+                            delta[side].append((price, 0))
+                    else:
+                        delta[side].append((price, size))
+                        self.l2_book[pair][side][price] = size
 
-        await self.book_callback(self.l2_book[pair], L2_BOOK, pair, False, False, timestamp, timestamp)
+        await self.book_callback(self.l2_book[pair], L2_BOOK, pair, False,
+                                 delta, timestamp, timestamp)
 
     async def subscribe(self, conn: AsyncConnection):
         self.__reset()
         client_id = 0
         for chan, symbols in self.subscription.items():
+            params = {}
             for symbol in symbols:
+                if chan == "orderbook":
+                    params = {"keep_alive_when_offline": True}
                 client_id += 1
                 await conn.write(
                     json.dumps({
                         "type": "subscribe",
                         "chan_name": f"{chan}",
-                        "subchan_name": f"{symbol}"
+                        "subchan_name": f"{symbol}",
+                        "params": params
                     }))
 
     async def message_handler(self, msg, conn, timestamp):
@@ -122,9 +148,11 @@ class Bsdex(Feed):
             return
         elif msg['type'] == 'subscribed':
             return
-        elif 'chan_name' in msg and msg['chan_name'] == 'quote' and msg['type'] == 'data':
+        elif 'chan_name' in msg and msg['chan_name'] == 'quote' and msg[
+                'type'] == 'data':
             await self._ticker(msg)
-        elif 'chan_name' in msg and msg['chan_name'] == 'orderbook' and msg['type'] == 'data':
+        elif 'chan_name' in msg and msg['chan_name'] == 'orderbook' and msg[
+                'type'] == 'data':
             await self._book(msg)
         elif msg['type'] == 'offline':
             LOG.warning("%s: Channel %s is offline", self.id, msg['chan_name'])
