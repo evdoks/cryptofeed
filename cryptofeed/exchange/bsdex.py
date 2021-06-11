@@ -162,6 +162,11 @@ class Bsdex(Feed):
         elif 'chan_name' in msg and msg['chan_name'] == 'orderbook' and msg[
                 'type'] == 'data':
             await self._book(msg)
+        elif 'chan_name' in msg and msg['chan_name'] == 'orderbook' and msg[
+                'type'] == 'offline':
+            # clear orderbook after orderbook channel gets offline
+            self.l2_book.pop(msg['subchan_name'].upper(), None)
+            LOG.info("%s: Channel %s is online", self.id, msg['chan_name'])
         elif msg['type'] == 'offline':
             LOG.warning("%s: Channel %s is offline", self.id, msg['chan_name'])
         elif msg['type'] == 'online':
