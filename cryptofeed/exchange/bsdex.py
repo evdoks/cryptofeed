@@ -1,5 +1,5 @@
 from cryptofeed.symbols import Symbols
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List, Callable
 from decimal import Decimal
 import json
 import logging
@@ -21,9 +21,17 @@ class Bsdex(Feed):
 
     def __init__(self, **kwargs):
         super().__init__(
-            'wss://api.bsdex.de/consumer/ws?access_token=1nMhJHDcOWVsvG4XUTbNerhwGLXDgEHH',
+            address='wss://api.bsdex.de/consumer/ws',
             **kwargs)
         self.__reset()
+
+    def connect(self) -> List[Tuple[AsyncConnection, Callable[[None], None], Callable[[str, float], None]]]:
+        ret = [] 
+        for channel in self.subscription:
+            ret.append(self._connect_builder(f"{self.address}?access_token={self.config.bsdex.access_token}",
+                                             None))
+
+        return ret
 
     def __reset(self):
         pass
@@ -122,7 +130,7 @@ class Bsdex(Feed):
         await self.book_callback(self.l2_book[pair], L2_BOOK, pair, False,
                                  delta, timestamp, timestamp)
 
-    async def subscribe(self, conn: AsyncConnection):
+    async def subscribe(self, conn: AsyncConnection, options=None):
         self.__reset()
         client_id = 0
         for chan, symbols in self.subscription.items():
@@ -156,5 +164,7 @@ class Bsdex(Feed):
             await self._book(msg)
         elif msg['type'] == 'offline':
             LOG.warning("%s: Channel %s is offline", self.id, msg['chan_name'])
+        elif msg['type'] == 'online':
+            LOG.info("%s: Channel %s is online", self.id, msg['chan_name'])
         else:
             LOG.warning("%s: Invalid message type %s", self.id, msg)
