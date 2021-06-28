@@ -26,7 +26,7 @@ class Bsdex(Feed):
         self.__reset()
 
     def connect(self) -> List[Tuple[AsyncConnection, Callable[[None], None], Callable[[str, float], None]]]:
-        ret = [] 
+        ret = []
         for channel in self.subscription:
             ret.append(self._connect_builder(f"{self.address}?access_token={self.config.bsdex.access_token}",
                                              None))
